@@ -1,0 +1,103 @@
+from scapy.all import *
+
+class Firewall:
+    def __init__(self):
+        self.rules = []  # List to store firewall rules
+        self.log_file = open("firewall.log", "a")  # Log file for logging allowed/dropped packets
+
+    def add_rule(self, rule):
+        self.rules.append(rule)
+
+    def packet_handler(self, packet):
+        ip_layer = packet.getlayer(IP)
+        if ip_layer is None:
+            return
+
+        src_ip = ip_layer.src
+        dst_ip = ip_layer.dst
+
+        # Check against each rule
+        for rule in self.rules:
+            if self.matches_rule(packet, src_ip, dst_ip, rule):
+                self.log_packet(packet, "Allowed")
+                return
+
+        # If no rules matched, drop the packet
+        self.log_packet(packet, "Dropped")
+        packet.drop()
+
+    def matches_rule(self, packet, src_ip, dst_ip, rule):
+        src_match = self.match_ip(src_ip, rule['source'])
+        dst_match = self.match_ip(dst_ip, rule['destination'])
+        protocol_match = self.match_protocol(packet, rule.get('protocol'))
+        port_match = self.match_port(packet, rule.get('port'))
+        return src_match and dst_match and protocol_match and port_match
+
+    def match_ip(self, ip_address, rule_ip):
+        if rule_ip == 'any':
+            return True
+        elif '/' in rule_ip:  # IP/mask format
+            rule_network = IPNetwork(rule_ip)
+            return IPAddress(ip_address) in rule_network
+        else:  # Single IP address
+            return ip_address == rule_ip
+
+    def match_protocol(self, packet, rule_protocol):
+        if not rule_protocol:
+            return True
+        if TCP in packet and rule_protocol.lower() == 'tcp':
+            return True
+        if UDP in packet and rule_protocol.lower() == 'udp':
+            return True
+        return False
+
+    def match_port(self, packet, rule_port):
+        if not rule_port:
+            return True
+        transport_layer = packet.getlayer(TCP) or packet.getlayer(UDP)
+        if transport_layer:
+            dst_port = transport_layer.dport
+            return dst_port == rule_port
+        return False
+
+    def log_packet(self, packet, action):
+        ip_layer = packet.getlayer(IP)
+        if ip_layer:
+            src_ip = ip_layer.src
+            dst_ip = ip_layer.dst
+            transport_layer = packet.getlayer(TCP) or packet.getlayer(UDP)
+            if transport_layer:
+                dst_port = transport_layer.dport
+                log_message = f"{action} - {src_ip}:{dst_port} -> {dst_ip}:{dst_port}\n"
+                self.log_file.write(log_message)
+                self.log_file.flush()
+
+    def cleanup(self):
+        self.log_file.close()
+
+# Example usage
+if __name__ == "__main__":
+    firewall = Firewall()
+
+    # Define some rules
+    firewall.add_rule({
+        'source': '192.168.1.0/24',
+        'destination': 'any',
+        'protocol': 'tcp',
+        'port': 80
+    })
+    firewall.add_rule({
+        'source': 'any',
+        'destination': '192.168.1.1',
+        'protocol': 'udp',
+        'port': 53
+    })
+
+    try:
+        # Sniff packets and apply the firewall rules
+        sniff(prn=firewall.packet_handler, store=0)
+    except KeyboardInterrupt:
+        print("Firewall stopped by user.")
+    finally:
+        firewall.cleanup()
+
